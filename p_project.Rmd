@@ -1,0 +1,88 @@
+---
+title: "Practical Machine Learning Project"
+author: "Wouter van Amsterdam"
+date: "1 September 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+The problem defined for this project is how to classify proper weight lifting with on-body sensors
+See also: http://groupware.les.inf.puc-rio.br/har
+
+This markdown document will guide you through the process of model building and validation, and show the acheived results
+
+NB I will use the data.table package for my data handling, which uses a syntax for subsetting that's a bit different from data.frames
+See: https://cran.r-project.org/web/packages/data.table/vignettes/datatable-intro.pdf
+
+## Downloading and importing data
+
+## Download data
+
+```{r download_data, echo = T, results='hide', cache=T}
+url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+download.file(url, destfile = 'data/pml-training.csv')
+url2 <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+download.file(url2, destfile = 'data/pml-testing.csv')
+```
+
+## Import data into R
+
+```{r import_data, echo = T, results = 'hide', cache = T}
+library(data.table)
+training <- data.table(read.csv("data/pml-training.csv", header = T))
+testing  <- data.table(read.csv("data/pml-testing.csv", header = T))
+```
+
+## Data exploration and curation
+
+```{r, echo = T, results='hide'}
+library(data.table)
+head(training)
+head(testing)
+colSums(is.na(training))
+```
+```{r, echo = T}
+colSums(is.na(testing))/nrow(testing)
+training[, lapply(.SD, table), .SDcols = c("user_name", "new_window", "num_window")]
+training[, table(user_name, new_window)]
+training[, table(num_window)]
+```
+
+Take a better look at the timestamps. CVTD_timestamp is the date and time, 
+raw_timestamp_part_2 probably contains the millisecond information, and 
+raw_timestamp_part_1 the second information (last two digits)
+```{r timestamp, echo = T}
+training[, head(cbind(raw_timestamp_part_1, raw_timestamp_part_2, 
+                      as.character(cvtd_timestamp)), 30)]
+
+```
+
+
+
+Looks like some variables are 100% missing in the testing data. They won't provide any information in model testing, let's throw 'm out
+
+```{r, echo = T, results = 'hide'}
+empty_vars <- names(testing)[colSums(is.na(testing)) == nrow(testing)]
+training <- training[, .SD, .SDcols = !names(training) %in% empty_vars]
+testing  <- testing[, .SD, .SDcols = !names(testing) %in% empty_vars]
+```
+
+
+Now that we've kicked out the empty variables, let's look at the 60 remaining variables. 'X' in this dataset is just a rownumber, and can be excluded
+
+```{r, echo = T, results='hide'}
+training <- training[, .SD, .SDcols = -c("X")]
+testing <- testing[, .SD, .SDcols = -c("X")]
+colSums(is.na(training))
+
+library(xtable)
+## reminder to use xtable for html pretty tables
+```
+
+That's it!.
+
