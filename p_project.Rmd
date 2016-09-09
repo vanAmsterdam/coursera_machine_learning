@@ -1,7 +1,7 @@
 ---
 title: "Practical Machine Learning Project"
 author: "Wouter van Amsterdam"
-date: "1 September 2016"
+date: "7 September 2016"
 output: html_document
 ---
 
@@ -21,7 +21,7 @@ See: https://cran.r-project.org/web/packages/data.table/vignettes/datatable-intr
 
 ## Downloading and importing data
 
-## Download data
+### Download data
 
 ```{r download_data, echo = T, results='hide', cache=T}
 url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
@@ -30,59 +30,156 @@ url2 <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
 download.file(url2, destfile = 'data/pml-testing.csv')
 ```
 
-## Import data into R
+### Import data into R
 
 ```{r import_data, echo = T, results = 'hide', cache = T}
 library(data.table)
 training <- data.table(read.csv("data/pml-training.csv", header = T))
-testing  <- data.table(read.csv("data/pml-testing.csv", header = T))
+problems  <- data.table(read.csv("data/pml-testing.csv", header = T))
 ```
 
 ## Data exploration and curation
+First we need to get a feel for the training data. 
 
+Look at head of the data and for missing data
 ```{r, echo = T, results='hide'}
 library(data.table)
 head(training)
-head(testing)
 colSums(is.na(training))
-```
-```{r, echo = T}
-colSums(is.na(testing))/nrow(testing)
-training[, lapply(.SD, table), .SDcols = c("user_name", "new_window", "num_window")]
-training[, table(user_name, new_window)]
-training[, table(num_window)]
 ```
 
 Take a better look at the timestamps. CVTD_timestamp is the date and time, 
 raw_timestamp_part_2 probably contains the millisecond information, and 
-raw_timestamp_part_1 the second information (last two digits)
-```{r timestamp, echo = T}
+raw_timestamp_part_1 the second information (last two digits). 
+```{r timestamp, echo = T, results = T}
 training[, head(cbind(raw_timestamp_part_1, raw_timestamp_part_2, 
                       as.character(cvtd_timestamp)), 30)]
+```
+
+When pasted together, they give unique identifiers to each row, which are 
+separated by time. 
+```{r define_times, echo = T, results='hide'}
+training[, date_time:=lubridate::dmy_hm(cvtd_timestamp)]
+training[, time_id:=as.numeric(paste0(raw_timestamp_part_1, ".", 
+                                      raw_timestamp_part_2))]
+```
+
+This can be used for plotting to see what the subjects are doing on consequtive 
+timepoints in the training set.
+```{r classe_plot, echo =  T, results='asis'}
+library(ggplot2)
+ggplot(training) + aes(x = time_id, y = as.numeric(classe), col = classe) +
+        geom_point() + facet_wrap(~user_name, scales = "free")
 
 ```
 
 
-
-Looks like some variables are 100% missing in the testing data. They won't provide any information in model testing, let's throw 'm out
-
-```{r, echo = T, results = 'hide'}
-empty_vars <- names(testing)[colSums(is.na(testing)) == nrow(testing)]
+So what is going on in the test set? For each user, only a few lines are 
+present. 
+All column names in \code{problems} are present in training, except for 'problem_id'. 
+Some columns are completely empty, these won't be very helpfull with 
+classification. They appear to be aggregated versions of other varibales. 
+We will throw them out.
+```{r test_explore, echo = T}
+problems[, table(user_name)]
+setdiff(colnames(problems), colnames(training))
+problems[, problem_id]
+empty_vars <- names(problems)[colSums(is.na(problems)) == nrow(problems)]
+empty_vars
 training <- training[, .SD, .SDcols = !names(training) %in% empty_vars]
-testing  <- testing[, .SD, .SDcols = !names(testing) %in% empty_vars]
+problems  <- problems[, .SD, .SDcols = !names(problems) %in% empty_vars]
 ```
 
 
-Now that we've kicked out the empty variables, let's look at the 60 remaining variables. 'X' in this dataset is just a rownumber, and can be excluded
-
+Now that we've kicked out the empty variables, let's look at the 60 remaining 
+variables. 'X' in this dataset is just a rownumber, and can be excluded. 
+A few variables make no sense to include in the modeling.
 ```{r, echo = T, results='hide'}
 training <- training[, .SD, .SDcols = -c("X")]
-testing <- testing[, .SD, .SDcols = -c("X")]
-colSums(is.na(training))
-
-library(xtable)
-## reminder to use xtable for html pretty tables
+problems <- problems[, .SD, .SDcols = -c("X")]
+ex_vars <- c("user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", 
+             "cvtd_timestamp", "new_window", "num_window", 
+             "time_id", "date_time")
 ```
 
-That's it!.
+
+## Modeling
+Let's start modeling
+
+GBM approach, +- 25 minutes training; first with creating a data partition. 
+The classification performance is extremely high: 97.4%.
+```{r gbm, echo = T, cache = T}
+library(caret)
+set.seed(57)
+inTrain <- createDataPartition(training$classe, p = .6, list = F)
+tr <- training[inTrain, .SD, .SDcols = -ex_vars]
+te <- training[-inTrain,.SD, .SDcols = -ex_vars]
+dim(tr); dim(te)
+
+fit_gbm <- train(classe~., data = tr, 
+                 method = 'gbm',
+                 verbose = F)
+
+confusionMatrix(predict(fit_gbm, newdata = te), reference = te$classe)
+```
+
+
+Try a different model: random forest with 5-fold cross validation. Also using multi-threading to speed
+ things up. Still it took 21 minutes. 
+```{r rf_cv, echo = T, cache = T}
+library(caret)
+library(doMC)
+registerDoMC(cores = 7)
+trCont <- trainControl(method = "cv", number = 5)
+set.seed(57)
+system.time(
+        fit_rf_cv <- train(classe~., 
+                           data = training[, .SD, .SDcols = -ex_vars],
+                           method = 'rf',
+                           trControl = trCont)
+)
+
+fit_rf_cv
+```
+
+
+A 99% accuracy seems too good to be true. We can increase the number of cross-
+validation folds, this reduces the bias. There are still enough testing samples
+ if we do 20-fold CV, as \code{nrow(training)/20 = 981.1}. (this took 100 min)
+```{r rf_cv_20, echo = T, cache = T}
+library(caret)
+library(doMC)
+registerDoMC(cores = 7)
+trCont <- trainControl(method = "cv", number = 20)
+set.seed(57)
+system.time(
+        fit_rf_cv_20 <- train(classe~., 
+                           data = training[, .SD, .SDcols = -ex_vars],
+                           method = 'rf',
+                           trControl = trCont)
+)
+fit_rf_cv_20
+```
+
+
+Again a very high accuracy. Just as a sanity check: use a single split.
+```{r rf, echo = T, cache = T}
+library(caret)
+library(caret)
+library(doMC)
+registerDoMC(cores = 7)
+set.seed(57)
+inTrain <- createDataPartition(training$classe, p = .6, list = F)
+tr <- training[inTrain, .SD, .SDcols = -ex_vars]
+te <- training[-inTrain,.SD, .SDcols = -ex_vars]
+dim(tr); dim(te)
+
+system.time(fit_rf <- train(classe~., data = tr, method = 'rf'))
+
+confusionMatrix(predict(fit_rf, newdata = te), reference = te$classe)
+```
+
+Apparantly, the type of weightlifting can be predicted dead accurate with 
+these movement trackers! The best estimate of out-of-sample error comes from 
+the 20-fold cross-validation: 99.6% accuracy!
 
