@@ -1,0 +1,7 @@
+name: "machine_learning_project"
+output_dir: "."
+navbar:
+  title: "Machine learning project"
+  left:
+    - text: "Home"
+      href: p_project.html
